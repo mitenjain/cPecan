@@ -59,6 +59,7 @@ static stHash *readFastaFile(char *filename) {
 //    return columns;
 //}
 //
+
 int main(int argc, char *argv[]) {
     // Parse arguments
     if (argc != 2) {
@@ -70,9 +71,13 @@ int main(int argc, char *argv[]) {
     // hmm_getStateMachine (see the realign code)
     StateMachine *stateMachine  = stateMachine5_construct(fiveState);
 
-    // From Ben's code
+    // From Benedict's code
     PairwiseAlignmentParameters *parameters = pairwiseAlignmentBandingParameters_construct();
+
+    // declare matchGamma
     float matchGamma = 0.85;
+
+    // initialize seqFrags
     stList *seqFrags = stList_construct3(0, (void(*)(void *))seqFrag_destruct);
 
     // create hash of reads and iterate to construct seqFrags
@@ -87,19 +92,20 @@ int main(int argc, char *argv[]) {
         i++;
     }
 
-    // Make a call to the multiple alignment code from MultipleAligner.
+    // Make a call to makeAlignment from MultipleAligner. This returns a column struct
     MultipleAlignment *mA = makeAlignment(stateMachine, seqFrags, 2, 1000, st_random() > 0.5, 0.85, parameters);
 
     for(int i = 0; i < stSet_size(mA); i++) {
         printf("%d\n", i);
     }
     
+    // This function is what I will try to use for sorting (later)
 //             stList_sort(alignedPairs, (int (*)(const void *, const void *)) stIntTuple_cmpFn);
 //             // Output the cigar string
 //             cigarWrite(stdout, alignment, 0);
 
-    stHash_destructIterator(queryIt);
     // Clean up
+    stHash_destructIterator(queryIt);
     stHash_destruct(querySequences);
     stList_destruct(seqFrags);
     pairwiseAlignmentBandingParameters_destruct(parameters);
