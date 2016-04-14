@@ -71,6 +71,7 @@ int main(int argc, char *argv[]) {
         i++;
     }
 
+    // Just a sanity check
     printf( "# reads %d \n", i );
 
     // Make a call to makeAlignment from MultipleAligner. This returns a column struct
