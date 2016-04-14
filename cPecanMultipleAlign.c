@@ -48,7 +48,8 @@ int main(int argc, char *argv[]) {
     StateMachine *stateMachine  = stateMachine5_construct(fiveState);
 
     // From Benedict's code
-    PairwiseAlignmentParameters *parameters = pairwiseAlignmentBandingParameters_construct();
+    PairwiseAlignmentParameters *parameters = \
+                                    pairwiseAlignmentBandingParameters_construct();
 
     // declare spanningTrees, maxPairsToConsider, useProgressiveMerging, matchGamma
     int64_t spanningTrees = 2;
@@ -74,21 +75,23 @@ int main(int argc, char *argv[]) {
 
     // Make a call to makeAlignment from MultipleAligner. This returns a column struct
     // the input params are just place holders to make this work and customizable later
-    MultipleAlignment *mA = makeAlignment(stateMachine, seqFrags, spanningTrees, maxPairsToConsider, useProgressiveMerging, matchGamma, parameters);
+    MultipleAlignment *mA = makeAlignment(stateMachine, seqFrags, spanningTrees, \
+            maxPairsToConsider, useProgressiveMerging, matchGamma, parameters);
 
     // Just a sanity check
     printf("%" PRIi64 "\n", stSet_size(mA->columns));
     
-    // set up process to call stSet_getIterate have iterate over columns, which are stSets
-    // outer look for iterating over columns in multipleAlignment mA, each column is a struct Column
+    // call stSet_getIterate have iterate over columns, which are stSets
+    // outer loop iterates over columns in multipleAlignment mA, 
+    // each column is a struct Column
     // mA is not ordered, we need to figure out how to order
     stSetIterator *columns = stSet_getIterator(mA->columns);
     Column *column;
     while ((column = stSet_getNext(columns)) != NULL) {
         stList *columnNucleotides = stList_construct3(0, free);
-        // now iterate over each column and get the seqName and position from each column
-        // get query sequence from seqFrags based on seqName, which is the position of querySeq 
-        // in seqFrags in list
+        // now iterate over each column and get the seqName and position
+        // get query sequence from seqFrags based on seqName, 
+        // which is the position of querySeq in seqFrags in list
         while(column != NULL) {
             // individual column entry, which is a linked list itself
             SeqFrag *querySeq = stList_get(seqFrags, column->seqName);
@@ -111,7 +114,8 @@ int main(int argc, char *argv[]) {
         }
         
         // Now get the winner base, this is naive right now
-        // need to add smart filters, like winner means ≥ 50% reads and at least x number of reads
+        // need to add smart filters 
+        // like winner means ≥ 50% reads and at least x number of reads
         int64_t winner ;
         winner = nucleotideArray[0];
         int64_t idx = 0 ;
