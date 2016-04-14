@@ -4,7 +4,6 @@
 #include "commonC.h"
 
 static void usage(char *argv[]) {
-//     fprintf(stderr, "%s fasta_target (ref) fasta_query\n", argv[0]);
     fprintf(stderr, "%s fasta_query\n", argv[0]);
 }
 
