@@ -37,29 +37,6 @@ static stHash *readFastaFile(char *filename) {
     return headerToData;
 }
 
-//
-//// reads columns from a multiple alignment
-//stSet *readColumns(stList *columns) {
-//    /*
-// *      * Reads a set of columns, each containing one sequence position. Represents
-// *           * initially unaligned state of sequence positions.
-// *                */
-//    //stSet *columns = stSet_construct3((uint64_t(*)(const void *)) column_hashFn, (int(*)(const void *, const void *)) column_equalsFn,
-//    //        (void(*)(void *)) column_destruct);
-//    for (int64_t seq = 0; seq < stList_length(seqFrags); seq++) {
-//        //int64_t seqLength = ((SeqFrag *) (stList_get(seqFrags, seq)))->length;
-//        for (int64_t pos = 0; pos < seqLength; pos++) {
-//            Column *c = st_malloc(sizeof(Column));
-//            c->seqName = seq;
-//            c->position = pos;
-//            c->nColumn = NULL;
-//            stSet_insert(columns, c);
-//        }
-//    }
-//    return columns;
-//}
-//
-
 int main(int argc, char *argv[]) {
     // Parse arguments
     if (argc != 2) {
@@ -74,7 +51,10 @@ int main(int argc, char *argv[]) {
     // From Benedict's code
     PairwiseAlignmentParameters *parameters = pairwiseAlignmentBandingParameters_construct();
 
-    // declare matchGamma
+    // declare spanningTrees, maxPairsToConsider, useProgressiveMerging, matchGamma
+    int64_t spanningTrees = 2;
+    int64_t maxPairsToConsider = 1000;
+    int useProgressiveMerging = 1;
     float matchGamma = 0.85;
 
     // initialize seqFrags
@@ -88,17 +68,72 @@ int main(int argc, char *argv[]) {
     while ((queryHeader = stHash_getNext(queryIt)) != NULL) {
         char *querySeq = stHash_search(querySequences, queryHeader);
         stList_append(seqFrags, seqFrag_construct( querySeq, 0, strlen(querySeq) ));
-        printf( "Added Read %d \n", i );
         i++;
     }
 
-    // Make a call to makeAlignment from MultipleAligner. This returns a column struct
-    MultipleAlignment *mA = makeAlignment(stateMachine, seqFrags, 2, 1000, st_random() > 0.5, 0.85, parameters);
+    printf( "# reads %d \n", i );
 
-    for(int i = 0; i < stSet_size(mA); i++) {
-        printf("%d\n", i);
-    }
+    // Make a call to makeAlignment from MultipleAligner. This returns a column struct
+    // the input params are just place holders to make this work and customizable later
+    MultipleAlignment *mA = makeAlignment(stateMachine, seqFrags, spanningTrees, maxPairsToConsider, useProgressiveMerging, matchGamma, parameters);
+
+    // Just a sanity check
+    printf("%" PRIi64 "\n", stSet_size(mA->columns));
     
+    // set up process to call stSet_getIterate have iterate over columns, which are stSets
+    // outer look for iterating over columns in multipleAlignment mA, each column is a struct Column
+    // mA is not ordered, we need to figure out how to order
+    stSetIterator *columns = stSet_getIterator(mA->columns);
+    Column *column;
+    while ((column = stSet_getNext(columns)) != NULL) {
+        stList *columnNucleotides = stList_construct3(0, free);
+        // now iterate over each column and get the seqName and position from each column
+        // get query sequence from seqFrags based on seqName, which is the position of querySeq 
+        // in seqFrags in list
+        while(column != NULL) {
+            // individual column entry, which is a linked list itself
+            SeqFrag *querySeq = stList_get(seqFrags, column->seqName);
+            char *nucleotide = malloc(1);
+            *nucleotide = querySeq->seq[column->position];
+            stList_append(columnNucleotides, nucleotide);
+            column = column->nColumn;
+        }
+        // consensus finding
+        // Initialize an array with 0's and assign A, C, G, T to 0, 1, 2, 3
+        // This just counts occurences of A, C, G, T
+        int64_t nucleotideArray[4] = { 0, 0, 0, 0 } ;
+        for (int64_t i = 0; i < stList_length(columnNucleotides); i++) {
+            char *n;
+            n = stList_get(columnNucleotides, i);
+            if ( *n == 'A') { nucleotideArray[0]++ ; }
+            else if ( *n == 'C') { nucleotideArray[1]++ ; }
+            else if ( *n == 'G') { nucleotideArray[2]++ ; }
+            else if ( *n == 'T') { nucleotideArray[3]++ ; }
+        }
+        
+        // Now get the winner base, this is naive right now
+        // need to add smart filters, like winner means ≥ 50% reads and at least x number of reads
+        int64_t winner ;
+        winner = nucleotideArray[0];
+        int64_t idx = 0 ;
+        for (int64_t c = 0; c < sizeof(nucleotideArray)/sizeof(int64_t); c++) {
+            if (nucleotideArray[c] > winner) {
+                winner  = nucleotideArray[c];
+                idx = c;
+            }
+        }
+
+        // check which index is the highest, and assign a base
+        // assign the nucleotide based on that
+        if (idx == 0) { printf("A"); }
+        if (idx == 1) { printf("C"); } 
+        if (idx == 2) { printf("G"); } 
+        if (idx == 3) { printf("T"); } 
+ 
+        // cleanup 
+        stList_destruct(columnNucleotides);
+    }
+
     // This function is what I will try to use for sorting (later)
 //             stList_sort(alignedPairs, (int (*)(const void *, const void *)) stIntTuple_cmpFn);
 //             // Output the cigar string
