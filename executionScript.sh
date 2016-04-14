@@ -13,5 +13,5 @@ export PYTHONPATH=${BASEDIR}
 export PATH=${BASEDIR}/sonLib/bin:${BASEDIR}/jobTree/bin:${PATH}
 
 #Run described script
-python $@
+$@
 
