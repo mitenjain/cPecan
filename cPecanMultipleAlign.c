@@ -52,9 +52,9 @@ int main(int argc, char *argv[]) {
                                     pairwiseAlignmentBandingParameters_construct();
 
     // declare spanningTrees, maxPairsToConsider, useProgressiveMerging, matchGamma
-    int64_t spanningTrees = 2;
-    int64_t maxPairsToConsider = 1000;
-    int useProgressiveMerging = 1;
+    int64_t spanningTrees = st_randomInt(0, 5);
+    int64_t maxPairsToConsider = 10000000; //1000;
+    int useProgressiveMerging = st_random() > 0.5;
     float matchGamma = 0.85;
 
     // initialize seqFrags
@@ -133,7 +133,7 @@ int main(int argc, char *argv[]) {
         if (idx == 1) { printf("C"); } 
         if (idx == 2) { printf("G"); } 
         if (idx == 3) { printf("T"); } 
- 
+
         // cleanup 
         stList_destruct(columnNucleotides);
     }
