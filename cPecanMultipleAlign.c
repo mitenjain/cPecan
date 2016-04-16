@@ -36,15 +36,80 @@ static stHash *readFastaFile(char *filename) {
     return headerToData;
 }
 
+/*
+ *
+ * Following functions are used to sort the multiple alignment columns
+ *
+ */
+
+int cmpPositions(const void *a, const void *b) {
+    Column *c1 = (Column *)a;
+    Column *c2 = (Column *)b;
+    assert(c1->seqName != c2->seqName);
+    return c1->seqName < c2->seqName ? -1 : 1;
+}
+
+Column *sortColumn(Column *c) {
+    stList *columnList = stList_construct();
+    while(c != NULL) {
+        stList_append(columnList, c);
+        c = c->nColumn;
+    }
+    stList_sort(columnList, cmpPositions);
+    for(int64_t i=0; i+1<stList_length(columnList); i++) {
+        Column *c1 = stList_get(columnList, i);
+        Column *c2 = stList_get(columnList, i+1);
+        c1->nColumn = c2;
+        c2->nColumn = NULL;
+    }
+    c = stList_get(columnList, 0);
+    stList_destruct(columnList);
+    return c;
+}
+
+int cmpColumnFn(const void *a, const void *b) {
+    Column *c1 = (Column *)a;
+    Column *c2 = (Column *)b;
+    while(1) {
+        if(c1 == NULL && c2 == NULL) {
+            return 0;
+        }
+        if(c1 == NULL) {
+            return -1;
+        }
+        if(c2 == NULL) {
+            return 1;
+        }
+        if(c1->seqName == c2->seqName) {
+            assert(c1->position != c2->position);
+            return c1->position < c2->position ? -1 : 1;
+        }
+        c1 = c1->nColumn;
+        c2 = c2->nColumn;
+    }
+}
+
+stList *getSortedColumnList(stSet *columns) {
+    stList *columnList = stSet_getList(columns);
+    printf("Got the column list: %" PRIi64 "\n", stList_length(columnList));
+    for(int64_t i=0; i<stList_length(columnList); i++) {
+        stList_set(columnList, i, sortColumn(stList_get(columnList, i)));
+    }
+    printf("Ordered each columns: %" PRIi64 "\n", stList_length(columnList));
+
+    stList_sort(columnList, cmpColumnFn);
+    return columnList;
+}
+
 int main(int argc, char *argv[]) {
     // Parse arguments
-    if (argc != 2) {
+    if (argc != 4) {
         usage(argv);
         return 1;
     }
 
     // You would load a custom HMM here if you wanted using
-    // hmm_getStateMachine (see the realign code)
+    // hmm_getStateMachine (see the realign code) - this should use one of the nanopore HMMs.
     StateMachine *stateMachine  = stateMachine5_construct(fiveState);
 
     // From Benedict's code
@@ -52,10 +117,10 @@ int main(int argc, char *argv[]) {
                                     pairwiseAlignmentBandingParameters_construct();
 
     // declare spanningTrees, maxPairsToConsider, useProgressiveMerging, matchGamma
-    int64_t spanningTrees = 2;
-    int64_t maxPairsToConsider = 1000;
-    int useProgressiveMerging = 1;
-    float matchGamma = 0.85;
+    int64_t spanningTrees = 4;
+    int64_t maxPairsToConsider = 10000000;
+    int useProgressiveMerging = 0;
+    float matchGamma = 0.0;
 
     // initialize seqFrags
     stList *seqFrags = stList_construct3(0, (void(*)(void *))seqFrag_destruct);
@@ -68,6 +133,7 @@ int main(int argc, char *argv[]) {
     while ((queryHeader = stHash_getNext(queryIt)) != NULL) {
         char *querySeq = stHash_search(querySequences, queryHeader);
         stList_append(seqFrags, seqFrag_construct( querySeq, 0, strlen(querySeq) ));
+        printf("Adding a sequence of length: %" PRIi64 "\n", strlen(querySeq));
         i++;
     }
 
@@ -80,68 +146,91 @@ int main(int argc, char *argv[]) {
             maxPairsToConsider, useProgressiveMerging, matchGamma, parameters);
 
     // Just a sanity check
-    printf("%" PRIi64 "\n", stSet_size(mA->columns));
+    printf("Got %" PRIi64 " columns\n", stSet_size(mA->columns));
     
     // call stSet_getIterate have iterate over columns, which are stSets
     // outer loop iterates over columns in multipleAlignment mA, 
     // each column is a struct Column
     // mA is not ordered, we need to figure out how to order
-    stSetIterator *columns = stSet_getIterator(mA->columns);
-    Column *column;
-    while ((column = stSet_getNext(columns)) != NULL) {
+    stList *columnList = getSortedColumnList(mA->columns);
+
+    printf("Sorted the columns: %" PRIi64 "\n", stList_length(columnList));
+
+    char *consensusSeq = st_malloc(stList_length(columnList)+1);
+    int64_t consensusSeqLength = 0;
+
+    for(int64_t i=0; i<stList_length(columnList); i++) {
+        Column *column = stList_get(columnList, i);
         stList *columnNucleotides = stList_construct3(0, free);
         // now iterate over each column and get the seqName and position
         // get query sequence from seqFrags based on seqName, 
         // which is the position of querySeq in seqFrags in list
+        // and count the number of As, Cs, Ts, and Gs
+        int64_t nucleotideArray[4] = { 0, 0, 0, 0 } ;
         while(column != NULL) {
             // individual column entry, which is a linked list itself
             SeqFrag *querySeq = stList_get(seqFrags, column->seqName);
-            char *nucleotide = malloc(1);
-            *nucleotide = querySeq->seq[column->position];
-            stList_append(columnNucleotides, nucleotide);
+            char n = toupper(querySeq->seq[column->position]);
+            if ( n == 'A') { nucleotideArray[0]++ ; }
+            else if ( n == 'C') { nucleotideArray[1]++ ; }
+            else if ( n == 'G') { nucleotideArray[2]++ ; }
+            else if ( n == 'T') { nucleotideArray[3]++ ; }
+            else assert(0);
             column = column->nColumn;
-        }
-        // consensus finding
-        // Initialize an array with 0's and assign A, C, G, T to 0, 1, 2, 3
-        // This just counts occurences of A, C, G, T
-        int64_t nucleotideArray[4] = { 0, 0, 0, 0 } ;
-        for (int64_t i = 0; i < stList_length(columnNucleotides); i++) {
-            char *n;
-            n = stList_get(columnNucleotides, i);
-            if ( *n == 'A') { nucleotideArray[0]++ ; }
-            else if ( *n == 'C') { nucleotideArray[1]++ ; }
-            else if ( *n == 'G') { nucleotideArray[2]++ ; }
-            else if ( *n == 'T') { nucleotideArray[3]++ ; }
         }
         
         // Now get the winner base, this is naive right now
         // need to add smart filters 
         // like winner means ≥ 50% reads and at least x number of reads
-        int64_t winner ;
-        winner = nucleotideArray[0];
+        int64_t total = 0;
+        int64_t winner = nucleotideArray[0];
         int64_t idx = 0 ;
-        for (int64_t c = 0; c < sizeof(nucleotideArray)/sizeof(int64_t); c++) {
+        for (int64_t c = 0; c < 4; c++) {
+            total += nucleotideArray[c];
             if (nucleotideArray[c] > winner) {
-                winner  = nucleotideArray[c];
+                winner = nucleotideArray[c];
                 idx = c;
             }
         }
 
         // check which index is the highest, and assign a base
         // assign the nucleotide based on that
-        if (idx == 0) { printf("A"); }
-        if (idx == 1) { printf("C"); } 
-        if (idx == 2) { printf("G"); } 
-        if (idx == 3) { printf("T"); } 
+        if(total >= stList_length(seqFrags)-2) {
+            consensusSeq[consensusSeqLength++] = idx == 0 ? 'A' : (idx == 1 ? 'C' : (idx == 2 ? 'G' : 'T'));
+        }
  
         // cleanup 
         stList_destruct(columnNucleotides);
     }
+    consensusSeq[consensusSeqLength] = '\0';
+
+    FILE *fH = fopen(argv[2], "w");
+    fastaWrite(consensusSeq, "consensus_seq", fH);
+    fclose(fH);
 
     // This function is what I will try to use for sorting (later)
 //             stList_sort(alignedPairs, (int (*)(const void *, const void *)) stIntTuple_cmpFn);
 //             // Output the cigar string
 //             cigarWrite(stdout, alignment, 0);
+
+    //
+    //consensusSeq = ((SeqFrag *)stList_get(seqFrags, 2))->seq;
+
+    //Now load up the reference sequence and compare it to the consensus
+    char *refSeq = stList_get(stHash_getValues(readFastaFile(argv[3])), 0);
+    printf("Loaded the reference comparison sequence, has length: %" PRIi64 " \n", strlen(refSeq));
+    stList *alignedPairs = getAlignedPairs(stateMachine, refSeq, consensusSeq, parameters,  0, 0);
+    printf("All aligned pairs: %" PRIi64 "\n", stList_length(alignedPairs));
+    alignedPairs = filterPairwiseAlignmentToMakePairsOrdered(alignedPairs, refSeq, consensusSeq, matchGamma);
+    printf("Aligned pairs after filtering: %" PRIi64 "\n", stList_length(alignedPairs));
+    //Calc identity stats
+    int64_t identicalAlignedPairs = 0;
+    for(int64_t i=0; i<stList_length(alignedPairs); i++) {
+        stIntTuple *alignedPair = stList_get(alignedPairs, i);
+        identicalAlignedPairs += refSeq[stIntTuple_get(alignedPair, 1)] == consensusSeq[stIntTuple_get(alignedPair, 2)];
+    }
+    printf("Aligned pairs %" PRIi64 ", of which %" PRIi64 " are identical, giving an identity of %f\n",
+            stList_length(alignedPairs), identicalAlignedPairs, identicalAlignedPairs * 2.0 / (strlen(consensusSeq) + strlen(refSeq)));
 
     // Clean up
     stHash_destructIterator(queryIt);
@@ -149,5 +238,5 @@ int main(int argc, char *argv[]) {
     stList_destruct(seqFrags);
     pairwiseAlignmentBandingParameters_destruct(parameters);
     stateMachine_destruct(stateMachine);
-    printf("\nDone\n");
+    printf("\nDone, reported %" PRIi64 "columns\n", consensusSeqLength);
 }
