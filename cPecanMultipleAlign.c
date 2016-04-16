@@ -84,9 +84,14 @@ int cmpColumnFn(const void *a, const void *b) {
             assert(c1->position != c2->position);
             return c1->position < c2->position ? -1 : 1;
         }
-        c1 = c1->nColumn;
-        c2 = c2->nColumn;
+        if(c1->seqName < c2->seqName) {
+            c1 = c1->nColumn;
+        }
+        else {
+            c2 = c2->nColumn;
+        }
     }
+    return 0;
 }
 
 stList *getSortedColumnList(stSet *columns) {
@@ -218,6 +223,10 @@ int main(int argc, char *argv[]) {
 
     //Now load up the reference sequence and compare it to the consensus
     char *refSeq = stList_get(stHash_getValues(readFastaFile(argv[3])), 0);
+    //Reverse complement the sequence
+    refSeq = stString_reverseComplementString(refSeq);
+
+
     printf("Loaded the reference comparison sequence, has length: %" PRIi64 " \n", strlen(refSeq));
     stList *alignedPairs = getAlignedPairs(stateMachine, refSeq, consensusSeq, parameters,  0, 0);
     printf("All aligned pairs: %" PRIi64 "\n", stList_length(alignedPairs));
