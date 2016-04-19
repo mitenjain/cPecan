@@ -4,7 +4,7 @@
 #include "commonC.h"
 
 static void usage(char *argv[]) {
-    fprintf(stderr, "%s fasta_query\n", argv[0]);
+    fprintf(stderr, "%s fasta_query cns.fa ref.fa [orientation matters] \n", argv[0]);
 }
 
 // Returns a hash mapping from sequence header to sequence data.
