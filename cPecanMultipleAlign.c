@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include "sonLib.h"
 #include "pairwiseAligner.h"
 #include "multipleAligner.h"
@@ -67,43 +68,168 @@ Column *sortColumn(Column *c) {
     return c;
 }
 
-int cmpColumnFn(const void *a, const void *b) {
-    Column *c1 = (Column *)a;
-    Column *c2 = (Column *)b;
-    while(1) {
-        if(c1 == NULL && c2 == NULL) {
-            return 0;
+// Get the entry in this column that has a column->seqName entry
+// matching seqName, or NULL if there is none.
+Column *getEntryForSeq(Column *c, int64_t seqName) {
+    while (c != NULL) {
+        if (c->seqName == seqName) {
+            break;
         }
-        if(c1 == NULL) {
-            return -1;
-        }
-        if(c2 == NULL) {
-            return 1;
-        }
-        if(c1->seqName == c2->seqName) {
-            assert(c1->position != c2->position);
-            return c1->position < c2->position ? -1 : 1;
-        }
-        if(c1->seqName < c2->seqName) {
-            c1 = c1->nColumn;
-        }
-        else {
-            c2 = c2->nColumn;
-        }
+        c = c->nColumn;
     }
-    return 0;
+    return c;
 }
 
-stList *getSortedColumnList(stSet *columns) {
+// Compare two columns by a given sequence ID, pointed to by seqNamePtr.
+int cmpColumnsBySeq(const void *a, const void *b, const void *seqNamePtr) {
+    int64_t seqName = *((int64_t *) seqNamePtr);
+    Column *c1 = (Column *)a;
+    Column *c2 = (Column *)b;
+    c1 = getEntryForSeq(c1, seqName);
+    c2 = getEntryForSeq(c2, seqName);
+    if (c1 == NULL && c2 == NULL) {
+        return 0;
+    } else if (c1 == NULL) {
+        return 1;
+    } else if (c2 == NULL) {
+        return -1;
+    } else {
+        // Both columns have an entry for this sequence
+        return c1->position > c2->position ? 1 : -1;
+    }
+}
+
+// Print out a column in a nice way.
+void debugPrintColumn(Column *column, stList *seqFrags) {
+    while (column != NULL) {
+        printf("name: %" PRIi64 " pos: %" PRIi64 " nuc: %c\n", column->seqName, column->position,
+               ((SeqFrag *) stList_get(seqFrags, column->seqName))->seq[column->position]);
+        column = column->nColumn;
+    }
+}
+
+// Find the next adjacency to use, given a number of possible adjacencies.
+// The next adjacency to use is chosen so that the ordering never has
+// a "jump" of more than 1 in any sequence.
+// A topological sort would work as well, but this ended up being easier to debug.
+Column *findNextAdjacency(stHash *seqIndexToLargestPosition,
+                          stSet *nextColumns) {
+    stSetIterator *adjacencyIt = stSet_getIterator(nextColumns);
+
+    Column *adjacency;
+    while ((adjacency = stSet_getNext(adjacencyIt)) != NULL) {
+        bool validAdjacency = true;
+        Column *entry = adjacency;
+        while (entry != NULL) {
+            // FIXME: this is a temporary hacky way to search hash by
+            // integer, it's better to use the stIntTuples but it is
+            // slower and takes more code.
+            int64_t *largestPosition = stHash_search(seqIndexToLargestPosition, (void *) entry->seqName);
+            if (largestPosition == NULL) {
+                largestPosition = malloc(sizeof(int64_t));
+                *largestPosition = 0;
+                stHash_insert(seqIndexToLargestPosition, (void *) entry->seqName, largestPosition);
+            }
+            int64_t jump = getEntryForSeq(adjacency, entry->seqName)->position - *largestPosition;
+
+            if (jump < 0) {
+                st_errAbort("going backwards");
+            }
+            if (jump > 1) {
+                validAdjacency = false;
+            }
+            entry = entry->nColumn;
+        }
+        if (validAdjacency) {
+            entry = adjacency;
+            while (entry != NULL) {
+                int64_t *largestPosition = stHash_search(seqIndexToLargestPosition, (void *) entry->seqName);
+                *largestPosition = entry->position;
+                entry = entry->nColumn;
+            }
+            stSet_destructIterator(adjacencyIt);
+            return adjacency;
+        }
+    }
+    stSet_destructIterator(adjacencyIt);
+    return NULL;
+}
+
+stList *getSortedColumnList(stSet *columns, stList *seqFrags) {
     stList *columnList = stSet_getList(columns);
+    // FIXME: don't need this but it is nice for debug prints
     printf("Got the column list: %" PRIi64 "\n", stList_length(columnList));
     for(int64_t i=0; i<stList_length(columnList); i++) {
         stList_set(columnList, i, sortColumn(stList_get(columnList, i)));
     }
     printf("Ordered each columns: %" PRIi64 "\n", stList_length(columnList));
 
-    stList_sort(columnList, cmpColumnFn);
-    return columnList;
+    stHash *columnEntryToRightAdjacency = stHash_construct();
+    stSet *startCols = stSet_construct();
+
+    // Construct the adjacency hash.
+    for (int64_t i = 0; i < stList_length(seqFrags); i++) {
+        stList_sort2(columnList, cmpColumnsBySeq, &i);
+        stSet_insert(startCols, stList_get(columnList, 0));
+        for (int64_t j = 0; j < stList_length(columnList) - 1; j++) {
+            if (getEntryForSeq(stList_get(columnList, j + 1), i)) {
+                stHash_insert(columnEntryToRightAdjacency,
+                              getEntryForSeq(stList_get(columnList, j), i),
+                              stList_get(columnList, j + 1));
+                if (stSet_search(startCols, stList_get(columnList, j + 1))) {
+                    stSet_remove(startCols, stList_get(columnList, j + 1));
+                }
+            }
+        }
+    }
+
+    stList_destruct(columnList);
+
+    // From each start column (a column that has no left-adjacencies),
+    // add the columns to sortedList in a way that maintains the partial
+    // ordering
+    stList *sortedList = stList_construct();
+    stSetIterator *startColIt = stSet_getIterator(startCols);
+    Column *startCol;
+    while ((startCol = stSet_getNext(startColIt)) != NULL) {
+        stHash *seqIndexToLargestPosition = stHash_construct();
+        stSet *adjacencies = stSet_construct();
+        Column *column = startCol;
+        while (column != NULL) {
+            stList_append(sortedList, column);
+            Column *entry = column;
+            while (entry != NULL) {
+                stSet_insert(adjacencies, stHash_search(columnEntryToRightAdjacency, entry));
+                entry = entry->nColumn;
+            }
+            /* debugPrintColumn(canonicalColumn, seqFrags); */
+            /* printf("got %" PRIi64 " adjacencies\n", stSet_size(adjacencies)); */
+            /* stSetIterator *adjacencyIt = stSet_getIterator(adjacencies); */
+            /* Column *adjacency; */
+            /* printf("==========================\n"); */
+            /* while ((adjacency = stSet_getNext(adjacencyIt)) != NULL) { */
+            /*     printf("adjacency:\n"); */
+            /*     debugPrintColumn(adjacency, seqFrags); */
+            /* } */
+
+            column = findNextAdjacency(seqIndexToLargestPosition, adjacencies);
+            stSet_remove(adjacencies, column);
+
+            /* printf("chosen adjacency:\n"); */
+            /* debugPrintColumn(canonicalColumn, seqFrags); */
+        }
+        stSet_destruct(adjacencies);
+    }
+    stSet_destructIterator(startColIt);
+
+    printf("Had %" PRIi64 " start cols.\n", stSet_size(startCols));
+
+    printf("Ordered columns and have %" PRIi64 " entries.\n", stList_length(sortedList));
+
+    stHash_destruct(columnEntryToRightAdjacency);
+    stSet_destruct(startCols);
+
+    return sortedList;
 }
 
 int main(int argc, char *argv[]) {
@@ -152,12 +278,14 @@ int main(int argc, char *argv[]) {
 
     // Just a sanity check
     printf("Got %" PRIi64 " columns\n", stSet_size(mA->columns));
+
+    FILE *columnLengthDistribution = fopen("columnLengthDistribution", "w");
     
     // call stSet_getIterate have iterate over columns, which are stSets
     // outer loop iterates over columns in multipleAlignment mA, 
     // each column is a struct Column
     // mA is not ordered, we need to figure out how to order
-    stList *columnList = getSortedColumnList(mA->columns);
+    stList *columnList = getSortedColumnList(mA->columns, seqFrags);
 
     printf("Sorted the columns: %" PRIi64 "\n", stList_length(columnList));
 
@@ -200,7 +328,8 @@ int main(int argc, char *argv[]) {
 
         // check which index is the highest, and assign a base
         // assign the nucleotide based on that
-        if(total >= stList_length(seqFrags)-2) {
+        fprintf(columnLengthDistribution, "%" PRIi64 "\n", total);
+        if(total >= stList_length(seqFrags)/2) {
             consensusSeq[consensusSeqLength++] = idx == 0 ? 'A' : (idx == 1 ? 'C' : (idx == 2 ? 'G' : 'T'));
         }
  
@@ -223,13 +352,14 @@ int main(int argc, char *argv[]) {
 
     //Now load up the reference sequence and compare it to the consensus
     char *refSeq = stList_get(stHash_getValues(readFastaFile(argv[3])), 0);
-    //Reverse complement the sequence
     refSeq = stString_reverseComplementString(refSeq);
-
 
     printf("Loaded the reference comparison sequence, has length: %" PRIi64 " \n", strlen(refSeq));
     stList *alignedPairs = getAlignedPairs(stateMachine, refSeq, consensusSeq, parameters,  0, 0);
     printf("All aligned pairs: %" PRIi64 "\n", stList_length(alignedPairs));
+    alignedPairs = reweightAlignedPairs2(alignedPairs, strlen(refSeq),
+                                         strlen(consensusSeq),
+                                         parameters->gapGamma);
     alignedPairs = filterPairwiseAlignmentToMakePairsOrdered(alignedPairs, refSeq, consensusSeq, matchGamma);
     printf("Aligned pairs after filtering: %" PRIi64 "\n", stList_length(alignedPairs));
     //Calc identity stats
@@ -247,5 +377,8 @@ int main(int argc, char *argv[]) {
     stList_destruct(seqFrags);
     pairwiseAlignmentBandingParameters_destruct(parameters);
     stateMachine_destruct(stateMachine);
+    multipleAlignment_destruct(mA);
+    stList_destruct(columnList);
+
     printf("\nDone, reported %" PRIi64 "columns\n", consensusSeqLength);
 }
