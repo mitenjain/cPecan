@@ -37,6 +37,25 @@ static stHash *readFastaFile(char *filename) {
     return headerToData;
 }
 
+// Checks the column ordering is valid (i.e. increasing in all sequences).
+bool followsPartialOrdering(stList *columns, stList *seqFrags) {
+    int64_t *furthestPositionSoFar = st_calloc(stList_length(seqFrags), sizeof(int64_t));
+    bool valid = true;
+    for (int64_t i = 0; i < stList_length(columns); i++) {
+        Column *entry = stList_get(columns, i);
+        while (entry != NULL) {
+            if (furthestPositionSoFar[entry->seqName] > entry->position) {
+                valid = false;
+                break;
+            }
+            furthestPositionSoFar[entry->seqName] = entry->position;
+            entry = entry->nColumn;
+        }
+    }
+    free(furthestPositionSoFar);
+    return valid;
+}
+
 /*
  *
  * Following functions are used to sort the multiple alignment columns
@@ -108,51 +127,50 @@ void debugPrintColumn(Column *column, stList *seqFrags) {
     }
 }
 
-// Find the next adjacency to use, given a number of possible adjacencies.
-// The next adjacency to use is chosen so that the ordering never has
-// a "jump" of more than 1 in any sequence.
-// A topological sort would work as well, but this ended up being easier to debug.
-Column *findNextAdjacency(stHash *seqIndexToLargestPosition,
-                          stSet *nextColumns) {
-    stSetIterator *adjacencyIt = stSet_getIterator(nextColumns);
+// Non-recursive depth-first topological sort.
+stList *toposort(Column *column,
+                 stHash *columnEntryToRightAdjacency,
+                 stSet *visited) {
+    stList *sortedList = stList_construct();
 
-    Column *adjacency;
-    while ((adjacency = stSet_getNext(adjacencyIt)) != NULL) {
-        bool validAdjacency = true;
-        Column *entry = adjacency;
-        while (entry != NULL) {
-            // FIXME: this is a temporary hacky way to search hash by
-            // integer, it's better to use the stIntTuples but it is
-            // slower and takes more code.
-            int64_t *largestPosition = stHash_search(seqIndexToLargestPosition, (void *) entry->seqName);
-            if (largestPosition == NULL) {
-                largestPosition = malloc(sizeof(int64_t));
-                *largestPosition = 0;
-                stHash_insert(seqIndexToLargestPosition, (void *) entry->seqName, largestPosition);
-            }
-            int64_t jump = getEntryForSeq(adjacency, entry->seqName)->position - *largestPosition;
-
-            if (jump < 0) {
-                st_errAbort("going backwards");
-            }
-            if (jump > 1) {
-                validAdjacency = false;
-            }
-            entry = entry->nColumn;
-        }
-        if (validAdjacency) {
-            entry = adjacency;
+    // We divide up the DFS to get a non-recursive postorder traversal
+    // by using 2 stages: "pre-processing", which runs before visiting
+    // children, and "post-processing", which runs after all children
+    // have been fully processed. This is necessary since DFS toposort
+    // requires a post-order traversal.
+    stList *stack = stList_construct();
+    stSet *finishedPreProcessing = stSet_construct();
+    stList_append(stack, column);
+    stSet_insert(visited, column);
+    while (stList_length(stack) != 0) {
+        column = stList_pop(stack);
+        if (!stSet_search(finishedPreProcessing, column)) {
+            // First time visiting this node. We insert it back into
+            // the stack so that it will be visited *after* all of its
+            // children have been pre- and post-processed.
+            stSet_insert(finishedPreProcessing, column);
+            stList_append(stack, column);
+            Column *entry = column;
             while (entry != NULL) {
-                int64_t *largestPosition = stHash_search(seqIndexToLargestPosition, (void *) entry->seqName);
-                *largestPosition = entry->position;
+                Column *adjacency = stHash_search(columnEntryToRightAdjacency, entry);
+                if (adjacency != NULL && !stSet_search(visited, adjacency)) {
+                    stList_append(stack, adjacency);
+                }
                 entry = entry->nColumn;
             }
-            stSet_destructIterator(adjacencyIt);
-            return adjacency;
+        } else if (!stSet_search(visited, column)) {
+            stSet_insert(visited, column);
+            // Second time visiting this node. All children have been
+            // processed so it is safe to add to the (reverse)
+            // toposorted list.
+            stList_append(sortedList, column);
         }
     }
-    stSet_destructIterator(adjacencyIt);
-    return NULL;
+    stSet_destruct(finishedPreProcessing);
+    stList_destruct(stack);
+
+    stList_reverse(sortedList);
+    return sortedList;
 }
 
 stList *getSortedColumnList(stSet *columns, stList *seqFrags) {
@@ -162,7 +180,7 @@ stList *getSortedColumnList(stSet *columns, stList *seqFrags) {
     for(int64_t i=0; i<stList_length(columnList); i++) {
         stList_set(columnList, i, sortColumn(stList_get(columnList, i)));
     }
-    printf("Ordered each columns: %" PRIi64 "\n", stList_length(columnList));
+    printf("Ordered each column: %" PRIi64 "\n", stList_length(columnList));
 
     stHash *columnEntryToRightAdjacency = stHash_construct();
     stSet *startCols = stSet_construct();
@@ -190,37 +208,16 @@ stList *getSortedColumnList(stSet *columns, stList *seqFrags) {
     // ordering
     stList *sortedList = stList_construct();
     stSetIterator *startColIt = stSet_getIterator(startCols);
+    stSet *visited = stSet_construct();
     Column *startCol;
     while ((startCol = stSet_getNext(startColIt)) != NULL) {
-        stHash *seqIndexToLargestPosition = stHash_construct();
-        stSet *adjacencies = stSet_construct();
-        Column *column = startCol;
-        while (column != NULL) {
-            stList_append(sortedList, column);
-            Column *entry = column;
-            while (entry != NULL) {
-                stSet_insert(adjacencies, stHash_search(columnEntryToRightAdjacency, entry));
-                entry = entry->nColumn;
-            }
-            /* debugPrintColumn(canonicalColumn, seqFrags); */
-            /* printf("got %" PRIi64 " adjacencies\n", stSet_size(adjacencies)); */
-            /* stSetIterator *adjacencyIt = stSet_getIterator(adjacencies); */
-            /* Column *adjacency; */
-            /* printf("==========================\n"); */
-            /* while ((adjacency = stSet_getNext(adjacencyIt)) != NULL) { */
-            /*     printf("adjacency:\n"); */
-            /*     debugPrintColumn(adjacency, seqFrags); */
-            /* } */
-
-            column = findNextAdjacency(seqIndexToLargestPosition, adjacencies);
-            stSet_remove(adjacencies, column);
-
-            /* printf("chosen adjacency:\n"); */
-            /* debugPrintColumn(canonicalColumn, seqFrags); */
-        }
-        stSet_destruct(adjacencies);
+        stList *sortedSubList = toposort(startCol, columnEntryToRightAdjacency, visited);
+        stList_appendAll(sortedSubList, sortedList);
+        stList_destruct(sortedList);
+        sortedList = sortedSubList;
     }
     stSet_destructIterator(startColIt);
+    stSet_destruct(visited);
 
     printf("Had %" PRIi64 " start cols.\n", stSet_size(startCols));
 
@@ -280,12 +277,18 @@ int main(int argc, char *argv[]) {
     printf("Got %" PRIi64 " columns\n", stSet_size(mA->columns));
 
     FILE *columnLengthDistribution = fopen("columnLengthDistribution", "w");
-    
+
     // call stSet_getIterate have iterate over columns, which are stSets
     // outer loop iterates over columns in multipleAlignment mA, 
     // each column is a struct Column
     // mA is not ordered, we need to figure out how to order
     stList *columnList = getSortedColumnList(mA->columns, seqFrags);
+
+    // If you really need speed, you can change this to an assert. But
+    // it shouldn't take much time to run.
+    if (!followsPartialOrdering(columnList, seqFrags)) {
+        st_errAbort("Failed to sort the columns correctly");
+    }
 
     printf("Sorted the columns: %" PRIi64 "\n", stList_length(columnList));
 
