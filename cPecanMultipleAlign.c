@@ -141,7 +141,6 @@ stList *toposort(Column *column,
     stList *stack = stList_construct();
     stSet *finishedPreProcessing = stSet_construct();
     stList_append(stack, column);
-    stSet_insert(visited, column);
     while (stList_length(stack) != 0) {
         column = stList_pop(stack);
         if (!stSet_search(finishedPreProcessing, column)) {
